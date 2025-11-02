@@ -1,68 +1,91 @@
+# chatbot/services/chroma_service.py
 import os
 from django.conf import settings
-from chatbot.models import Match, Team, SectionPrices, Sections, Promotions, PromotionDetails
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import FAISS
+from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.docstore.document import Document
+from chatbot.models import Match, SectionPrices, PromotionDetails
+import shutil,time
+CHROMA_PATH = os.path.join(settings.BASE_DIR, "chatbot", "chroma_index")
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-INDEX_PATH = os.path.join(settings.BASE_DIR, "chatbot", "faiss_index")
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
-def build_faiss_index() -> None:
-    """Tạo FAISS index từ dữ liệu trong database."""
+def build_chroma_index():
+    # 🧹 Xoá index cũ nếu có
+    if os.path.exists(CHROMA_PATH):
+        db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
+        try:
+            if hasattr(db, "reset_collection"):
+                db.reset_collection()
+                print("✅ Đã reset toàn bộ dữ liệu trong collection.")
+            else:
+                print("⚠️ Phiên bản Chroma hiện tại chưa hỗ trợ .reset_collection().")
+        except Exception as e:
+            print(f"⚠️ Lỗi khi reset collection: {e}")
+
+        
     matches = (
-        Match.objects.select_related("team_1", "team_2")
+        Match.objects.select_related("team_1", "team_2", "league__sport_type")
         .prefetch_related("sectionprices_set__section")
-        .order_by("match_time")
     )
 
     docs = []
     for m in matches:
         match_name = f"{m.team_1.team_name} vs {m.team_2.team_name}"
-        section_prices = SectionPrices.objects.filter(match=m).select_related("section")
+        match_time = m.match_time.strftime('%H:%M %d/%m/%Y')
 
-        for sp in section_prices:
+        league_name = m.league.league_name if m.league else "Không xác định"
+        sport_type = m.league.sport_type.sport_type_name if m.league and m.league.sport_type else "Không xác định"
+
+        # Duyệt qua từng khu vực trong sân
+        for sp in SectionPrices.objects.filter(match=m).select_related("section"):
             section = sp.section.section_name
             price = int(sp.price)
             seats = sp.available_seats
 
+            # Xác định trạng thái vé
+            status = "còn vé" if seats > 0 else "hết vé"
+
+            # Kiểm tra khuyến mãi
             promo_detail = (
                 PromotionDetails.objects.filter(match=m, section=sp.section)
                 .select_related("promo")
                 .first()
             )
+
             promo_text = ""
             if promo_detail and promo_detail.promo and promo_detail.promo.status == 0:
                 promo = promo_detail.promo
-                if promo.discount_type == "percentage":
-                    promo_text = f", khuyến mãi {promo.promo_code}: giảm {int(promo.discount_value)}%"
-                else:
-                    promo_text = f", khuyến mãi {promo.promo_code}: giảm {int(promo.discount_value):,}đ"
+                promo_text = (
+                    f", khuyến mãi {promo.promo_code}: giảm {promo.discount_value}%"
+                    if promo.discount_type == "percentage"
+                    else f", khuyến mãi {promo.promo_code}: giảm {int(promo.discount_value):,}đ"
+                )
 
-            text = f"Trận {match_name}, khu vực {section}, giá {price:,}đ, còn {seats} chỗ{promo_text}."
+            # Text mô tả đầy đủ
+            text = (
+                f"Giải {league_name} ({sport_type}), "
+                f"Trận {match_name}, Thời gian diễn ra {match_time}, "
+                f"Khu vực {section}, giá {price:,}đ, {status}{promo_text}, còn {seats} chỗ."
+            )
+            
             docs.append(Document(page_content=text))
-
+            
     if not docs:
-        print("⚠️ Không có dữ liệu nào để tạo FAISS index.")
+        print("⚠️ Không có dữ liệu để tạo index.")
         return
-
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=OPENAI_API_KEY)
-    vectorstore = FAISS.from_documents(docs, embeddings)
-    vectorstore.save_local(INDEX_PATH)
-    print(f"✅ FAISS index đã được tạo và lưu tại {INDEX_PATH}")
+    db = Chroma.from_documents(docs, embedding=embeddings, persist_directory=CHROMA_PATH)
+    print(f"✅ Chroma index đã được tạo tại {CHROMA_PATH}")
 
 
-def find_match_info(user_message: str, k: int = 3) -> str | None:
-    """Tìm dữ liệu liên quan trong FAISS (RAG)."""
-    if not os.path.exists(INDEX_PATH):
-        print("⚠️ FAISS index chưa tồn tại, đang tạo mới...")
-        build_faiss_index()
 
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=OPENAI_API_KEY)
-    db = FAISS.load_local(INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
+
+def search_chroma(user_message: str, k: int = 3):
+    build_chroma_index()
+    """Truy vấn dữ liệu gần nhất trong Chroma."""
+    db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
     results = db.similarity_search(user_message, k=k)
-
+    print(results)
     if not results:
         return None
-
     return "\n".join([r.page_content for r in results])

@@ -6,3 +6,8 @@ python-dotenv==1.0.1
 langchain
 faiss-cpu 
 tiktoken
+groq
+langchain-community
+sentence-transformers
+django-crontab
+chromadb

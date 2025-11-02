@@ -1,32 +1,48 @@
 import os
 from openai import OpenAI
 from chatbot.models import ChatHistory
-from .db_service import find_match_info
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(
+    base_url="https://api.groq.com/openai/v1",
+    api_key=os.getenv("GROQ_API_KEY")
+)
 
 def generate_ai_response(user_message: str, customer=None, session_id=None, context=None) -> str:
-    """Chatbot sinh phản hồi dựa trên dữ liệu từ DB + ngữ cảnh FAISS."""
+    """Chatbot sinh phản hồi dựa trên dữ liệu từ DB + ngữ cảnh Chroma, có nhớ lịch sử hội thoại theo session_id."""
     try:
+        # 🧠 Lấy lịch sử hội thoại trước đó của cùng session
+        history = []
+        if session_id:
+            past_chats = ChatHistory.objects.filter(session_id=session_id).order_by("created_at")[:10]
+            for chat in past_chats:
+                history.append({"role": "user", "content": chat.user_message})
+                history.append({"role": "assistant", "content": chat.bot_response})
+
+        # 🎯 Hướng dẫn hệ thống
         system_prompt = (
             "Bạn là chatbot hỗ trợ khách hàng đặt vé thể thao. "
-            "Trả lời thân thiện, dễ hiểu và chỉ dựa trên dữ liệu thật bên dưới.\n\n"
+            "Trả lời thân thiện, dễ hiểu và chỉ dựa trên dữ liệu thật bên dưới. "
+            "Nếu người dùng hỏi tiếp tục cuộc hội thoại, hãy nhớ bối cảnh trước đó.\n\n"
         )
 
-        # Ghép FAISS context (nếu có)
-        user_prompt = f"Dữ liệu liên quan:\n{context or 'Không có dữ liệu phù hợp.'}\n\nNgười dùng hỏi: {user_message}"
+        # 🧩 Ghép ngữ cảnh từ Chroma
+        context_text = f"Dữ liệu liên quan:\n{context or 'Không có dữ liệu phù hợp.'}\n\n"
 
+        # 🗨️ Ghép tất cả message
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(history)  # thêm lịch sử hội thoại
+        messages.append({"role": "user", "content": context_text + user_message})
+
+        # 🤖 Gọi model LLaMA hoặc GPT tùy bạn cấu hình client
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            model="llama-3.1-8b-instant",
+            messages=messages,
             max_tokens=250,
         )
 
         answer = response.choices[0].message.content.strip()
 
+        # 💾 Lưu hội thoại mới vào DB
         ChatHistory.objects.create(
             customer=customer,
             user_message=user_message,
@@ -38,3 +54,27 @@ def generate_ai_response(user_message: str, customer=None, session_id=None, cont
 
     except Exception as e:
         return f"Lỗi khi gọi AI: {e}"
+def rewrite_query_with_context(user_message: str, session_id: str = None) -> str:
+    """Dùng AI để diễn giải lại câu hỏi sao cho có đủ ngữ cảnh từ hội thoại cũ."""
+
+    # Lấy lịch sử hội thoại gần nhất (3 lượt gần đây)
+    history_text = ""
+    if session_id:
+        last_chats = ChatHistory.objects.filter(session_id=session_id).order_by("-created_at")[:3]
+        for chat in reversed(last_chats):
+            history_text += f"Người dùng: {chat.user_message}\nBot: {chat.bot_response}\n"
+
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": "Bạn là trợ lý giúp diễn giải câu hỏi người dùng sao cho có đầy đủ ngữ cảnh. Không trả lời, chỉ viết lại câu hỏi hoàn chỉnh."},
+                {"role": "user", "content": f"Lịch sử hội thoại:\n{history_text}\n\nNgười dùng vừa hỏi: {user_message}"}
+            ],
+            max_tokens=100,
+        )
+        new_query = response.choices[0].message.content.strip()
+        return new_query or user_message
+    except Exception as e:
+        print("⚠️ Lỗi rewrite query:", e)
+        return user_message

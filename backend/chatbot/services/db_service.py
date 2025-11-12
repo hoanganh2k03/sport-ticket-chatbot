@@ -31,6 +31,7 @@ def build_chroma_index():
 
     docs = []
     for m in matches:
+        match_id=m.match_id
         match_name = f"{m.team_1.team_name} vs {m.team_2.team_name}"
         match_time = m.match_time.strftime('%H:%M %d/%m/%Y')
 
@@ -63,13 +64,14 @@ def build_chroma_index():
                 )
 
             # Text mô tả đầy đủ
-            text = (
+            text = (f"match_id {match_id}, "
                 f"Giải {league_name} ({sport_type}), "
                 f"Trận {match_name}, Thời gian diễn ra {match_time}, "
                 f"Khu vực {section}, giá {price:,}đ, {status}{promo_text}, còn {seats} chỗ."
             )
             
-            docs.append(Document(page_content=text))
+            docs.append(Document(page_content=text,metadata={
+        "match_id": m.match_id }))
             
     if not docs:
         print("⚠️ Không có dữ liệu để tạo index.")
@@ -88,4 +90,7 @@ def search_chroma(user_message: str, k: int = 3):
     print(results)
     if not results:
         return None
-    return "\n".join([r.page_content for r in results])
+    top_match_id = results[0].metadata.get("match_id")
+    context_text = "\n".join([r.page_content for r in results])
+
+    return context_text, top_match_id

@@ -41,7 +41,7 @@ class ChatbotAPIView(APIView):
             refined_query = rewrite_query_with_context(user_message, session_id=session_id)
 
             # 3b. Tìm dữ liệu liên quan trong FAISS
-            results = search_chroma(refined_query)
+            results, top_match_id = search_chroma(refined_query)
             context = results if results else ""
 
             # 3c. Gọi AI để sinh câu trả lời dựa trên ngữ cảnh tìm được
@@ -49,7 +49,7 @@ class ChatbotAPIView(APIView):
                 user_message,
                 customer=customer,
                 session_id=session_id,
-                context=context,
+                context=context,top_match_id=top_match_id
             )
 
         return Response({"reply": answer}, status=status.HTTP_200_OK)

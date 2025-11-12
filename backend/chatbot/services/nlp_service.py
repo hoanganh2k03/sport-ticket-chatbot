@@ -7,7 +7,7 @@ client = OpenAI(
     api_key=os.getenv("GROQ_API_KEY")
 )
 
-def generate_ai_response(user_message: str, customer=None, session_id=None, context=None) -> str:
+def generate_ai_response(user_message: str, customer=None, session_id=None, context=None,top_match_id=None) -> str:
     """Chatbot sinh phản hồi dựa trên dữ liệu từ DB + ngữ cảnh Chroma, có nhớ lịch sử hội thoại theo session_id."""
     try:
         # 🧠 Lấy lịch sử hội thoại trước đó của cùng session
@@ -22,7 +22,8 @@ def generate_ai_response(user_message: str, customer=None, session_id=None, cont
         system_prompt = (
             "Bạn là chatbot hỗ trợ khách hàng đặt vé thể thao. "
             "Trả lời thân thiện, dễ hiểu và chỉ dựa trên dữ liệu thật bên dưới. "
-            "Nếu người dùng hỏi tiếp tục cuộc hội thoại, hãy nhớ bối cảnh trước đó.\n\n"
+            f"Nếu có thể, hãy chèn đường dẫn đến trang đặt vé dạng localhost:8022/{top_match_id} khi người dùng có ý định đặt, mua, hoặc xem chi tiết vé. "
+            "Không bịa ra thông tin ngoài dữ liệu thật.\n\n"
         )
 
         # 🧩 Ghép ngữ cảnh từ Chroma
@@ -31,7 +32,15 @@ def generate_ai_response(user_message: str, customer=None, session_id=None, cont
         # 🗨️ Ghép tất cả message
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)  # thêm lịch sử hội thoại
-        messages.append({"role": "user", "content": context_text + user_message})
+        messages.append({
+    "role": "system",
+    "content": f"Dữ liệu liên quan:\n{context or 'Không có dữ liệu phù hợp.'}"
+})
+        messages.append({
+            "role": "system",
+            "content": context_text  # thêm ngữ cảnh như message system riêng biệt
+        })
+        messages.append({"role": "user", "content":user_message})
 
         # 🤖 Gọi model LLaMA hoặc GPT tùy bạn cấu hình client
         response = client.chat.completions.create(

@@ -17,3 +17,4 @@ venv/
 # Node / React
 frontend/node_modules/
 frontend/build/
+backend/chatbot/chroma_index
